@@ -1,0 +1,49 @@
+_base_: ./_base_/model/hyperprior_charm_dual_cond_vic_model_vq_f8_n256.yaml
+
+comment: main model OASIS discriminator
+
+model:
+  enc_vq_input: onehot_indices
+  use_selected_beta_pairs: true
+  # pairs decided by `score = PSNR * 2 - FID`
+  selected_beta_rate: [
+    2.29, # 0.050 bpp
+    1.51, # 0.075 bpp
+    1.12, # 0.100 bpp
+    0.62, # 0.125 bpp
+    0.16, # 0.150 bpp
+  ]
+  selected_beta_vq: [
+    3.00, # 0.050 bpp
+    2.25, # 0.075 bpp
+    2.00, # 0.100 bpp
+    1.50, # 0.125 bpp
+    1.00, # 0.150 bpp
+  ]
+
+subnet:
+  encoder:
+    max_beta_1: 3.0 # rate
+    max_beta_2: 3.5 # vq
+  decoder:
+    max_beta_1: 3.0 # rate
+    max_beta_2: 3.5 # vq
+
+
+# OASIS discriminator
+discriminator:
+  type: DualBetaCondTamingNLayerDiscriminator
+  input_nc: 11 # 3 + cond_ch
+  n_layers: 3
+  ndf: 64
+  out_nc: 257 # <<=== 256 tokens + 1 (fake class)
+  keep_shape: True # <<====
+  use_actnorm: False
+  weight_init: True
+  L: 10
+  cond_ch: 8
+  use_pi: False
+  include_x: True
+  max_beta_1: 3.0 # rate
+  max_beta_2: 3.5 # vq
+  norm_type: none
