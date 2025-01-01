@@ -1,6 +1,6 @@
 # Dual-Conditioned Training to Exploit Pre-trained Codebook-based Generative Model in Image Compression
 
-To be published in IEEE Access
+Published in IEEE Access. [[Paper]](https://ieeexplore.ieee.org/abstract/document/10815956)
 
 Authors: [Shoma Iwai](https://iwa-shi.github.io/), [Tomo Miyazaki](https://tomomiyazaki.github.io/), and [Shinichiro Omachi](http://www.iic.ecei.tohoku.ac.jp/~machi/index-e.html)
 
