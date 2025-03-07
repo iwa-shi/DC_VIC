@@ -84,8 +84,7 @@ def get_dataloader(real_path_list: List[str], fake_path_list: List[str], scale: 
 
 
 class BaseMetric(metaclass=ABCMeta):
-    def __init__(self, opt, metric_name: str):
-        self.opt = opt
+    def __init__(self, metric_name: str):
         self.metric_name = metric_name
         self.logger = get_root_logger()
 
@@ -120,8 +119,8 @@ class BaseMetric(metaclass=ABCMeta):
 
 
 class PSNRMetric(BaseMetric):
-    def __init__(self, opt):
-        super().__init__(opt, "PSNR")
+    def __init__(self):
+        super().__init__("PSNR")
 
     @staticmethod
     def read_img(img_path: str) -> np.ndarray:
@@ -172,9 +171,9 @@ class PSNRMetric(BaseMetric):
 
 
 class LPIPSMetric(BaseMetric):
-    def __init__(self, opt):
-        super().__init__(opt, "LPIPS")
-        self.device = opt.device
+    def __init__(self, device):
+        super().__init__("LPIPS")
+        self.device = device
         self.lpips_fn = lpips.LPIPS(net="alex").to(self.device)
 
     @torch.no_grad()
@@ -195,9 +194,9 @@ class LPIPSMetric(BaseMetric):
 
 
 class DISTSMetric(BaseMetric):
-    def __init__(self, opt):
-        super().__init__(opt, "DISTS")
-        self.device = opt.device
+    def __init__(self, device):
+        super().__init__("DISTS")
+        self.device = device
         self.dists_fn = DISTS().to(self.device)
 
     @torch.no_grad()
@@ -222,12 +221,12 @@ class FIDMetric(BaseMetric):
     """
     Extract 256x256 patches from images and calculate FID, following HiFIC.
     """
-    def __init__(self, opt):
+    def __init__(self, device):
         self.feature_dims = 2048
         self.fid_num_workers = 8
         self.fid_batch_size = 100
-        super().__init__(opt, metric_name="FID")
-        self.device = opt.device
+        super().__init__(metric_name="FID")
+        self.device = device
 
     def calc_metric(
         self, real_path_list: List[str], fake_path_list: List[str]
@@ -336,10 +335,10 @@ def main():
     fake_dir = opt.fake_dir
 
     metrics_dict = {
-        "PSNR": PSNRMetric(opt),
-        "FID": FIDMetric(opt),
-        "LPIPS": LPIPSMetric(opt),
-        "DISTS": DISTSMetric(opt),
+        "PSNR": PSNRMetric(),
+        "FID": FIDMetric(opt.device),
+        "LPIPS": LPIPSMetric(opt.device),
+        "DISTS": DISTSMetric(opt.device),
     }
 
     logger.info("Calculate " + ", ".join(list(metrics_dict.keys())))

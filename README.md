@@ -95,12 +95,16 @@ poetry run python scripts/calc_metrics.py --real_dir ./datasets/CLIC/test --fake
 You can find results on CLIC2020, Kodak, and DIV2K at [rd_results](./rd_results/).
 
 
+# Training
+See [training.md](./docs/training.md).
+
+
 ## TODO
 - [x] Relase repository  
 - [x] Add pre-trained models  
 - [x] Add inference scripts  
 - [x] Add RD-results  
-- [ ] Add training scripts  
+- [x] Add training scripts  
 
 
 ## Acknowledgement

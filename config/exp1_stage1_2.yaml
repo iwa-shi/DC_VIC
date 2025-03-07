@@ -1,0 +1,72 @@
+_base_: [
+  './_base_/default.yaml',
+  './_base_/dataset/train_openimage_eval_kodak.yaml',
+  './_base_/model/hyperprior_charm_dual_cond_vic_model_vq_f8_n256.yaml',
+]
+
+load_checkpoint:
+  exp: exp1_stage1_1
+  iter: 500000
+  load_discriminator: False
+  load_scheduler: False
+  load_optimizer: False
+  new_g_lr: 0.0001
+  strict: False
+
+trainer:
+  type: DualBetaCondRateDistortionVqCodeTrainer
+  beta_policy: exp
+  sample_beta_batch: True
+
+subnet:
+  encoder:
+    max_beta_1: 3.0 # rate
+    max_beta_2: 3.5 # vq
+  decoder:
+    max_beta_1: 3.0 # rate
+    max_beta_2: 3.5 # vq
+
+optim:
+  clip_max_norm: 1.0
+  g_optimizer:
+    type: Adam
+    lr: 0.0001
+  g_scheduler:
+    type: MultiStepLR
+    milestones: [300000]
+    gamma: 0.1
+  aux_optimizer:
+    type: Adam
+    lr: 0.001
+
+keep_step: [
+  300000,
+  500000,
+]
+
+start_iter: 0
+total_iter: 500000
+
+loss:
+  rate_loss:
+    type: RateLoss
+    loss_weight: 0.5
+    reduction: none
+  distortion_loss:
+    type: MSELoss
+    loss_weight: 50
+    normalize_img: True
+    mse_scale: '0_1'
+  perceptual_loss:
+    type: LPIPSLoss
+    net: alex
+    loss_weight: 1.0
+  code_distortion_loss:
+    type: VanillaMSELoss
+    loss_weight: 0.006
+    reduction: none
+  code_ce_loss:
+    type: FocalCrossEntropyLoss
+    loss_weight: 0.003
+    gamma: 2.0
+    reduction: none

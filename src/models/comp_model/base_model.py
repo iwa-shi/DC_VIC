@@ -73,9 +73,6 @@ class BaseModel(nn.Module):
     def validation(self):
         raise NotImplementedError()
 
-    def train_only_entropy_model(self):
-        raise NotImplementedError()
-
     def aux_loss(self):
         """Return the aggregated loss over the auxiliary entropy bottleneck
         module(s).

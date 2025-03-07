@@ -82,7 +82,7 @@ subnet:
     blk_depth: 3 # 6 -> 3
     use_upsample: false
   vq_model:
-    ckpt_path: null
+    ckpt_path: ./checkpoint/pretrained_vq_model/vq-f8-n256.ckpt # <<== change me
     ## parameters
     embed_dim: 4
     n_embed: 256

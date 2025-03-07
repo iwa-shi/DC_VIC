@@ -1,4 +1,3 @@
-
 from typing import List, Dict, Tuple, Optional
 
 import os
@@ -10,13 +9,10 @@ import torch.nn.functional as F
 
 from compressai.models import get_scale_table
 
-from tqdm import tqdm
-
 from src.utils.registry import MODEL_REGISTRY
 from src.utils.img_utils import calc_psnr, calc_ms_ssim, imwrite
 from src.utils.logger import get_root_logger
 from src.utils.codec_utils import HeaderHandler
-
 
 from .hyperprior_vic_model import (
     HyperpriorVicModel,
@@ -35,24 +31,24 @@ class HyperpriorDualCondVicModel(HyperpriorVicModel):
         enc_vq_input: str = "norm_indices",
         enc_input_vq_recon: bool = False,
         num_beta_levels: int = 100,
-        # instead of sampling beta from uniform distribution, 
+        # instead of sampling beta from uniform distribution,
         # sample beta from pre-defined discrete beta_list
         use_selected_beta_pairs: bool = False,
         selected_beta_rate: Optional[List[float]] = None,
         selected_beta_vq: Optional[List[float]] = None,
-        fixed_beta_vq: Optional[float] = None,
     ) -> None:
-        super().__init__(opt)
+        super().__init__(
+            opt,
+            gumbel_sampling=gumbel_sampling,
+            gumbel_kwargs=gumbel_kwargs,
+            enc_vq_input=enc_vq_input,
+            enc_input_vq_recon=enc_input_vq_recon,
+        )
         logger = get_root_logger()
-        self.gumbel_sampling = gumbel_sampling
-        self.gumbel_kwargs = gumbel_kwargs
+
         self.max_beta_rate: float = opt.subnet.decoder.max_beta_1
         self.max_beta_vq: float = opt.subnet.decoder.max_beta_2
         self.num_beta_levels = num_beta_levels
-
-        assert enc_vq_input in ["norm_indices", "onehot_indices", "long_indices"]
-        self.enc_vq_input = enc_vq_input
-        self.enc_input_vq_recon = enc_input_vq_recon
 
         self.use_selected_beta_pairs = use_selected_beta_pairs
         self.selected_beta_rate = selected_beta_rate
@@ -62,15 +58,9 @@ class HyperpriorDualCondVicModel(HyperpriorVicModel):
             assert isinstance(self.selected_beta_rate, list)
             assert isinstance(self.selected_beta_vq, list)
             assert len(self.selected_beta_rate) == len(self.selected_beta_vq)
-            logger.info('use_selected_beta_pairs: True')
-            logger.info(f'selected_beta_rate: {self.selected_beta_rate}')
-            logger.info(f'selected_beta_vq: {self.selected_beta_vq}')
-
-        self.fixed_beta_vq = None
-        if fixed_beta_vq is not None:
-            assert isinstance(fixed_beta_vq, float)
-            self.fixed_beta_vq = torch.Tensor([fixed_beta_vq]).float()
-            logger.info(f"fixed_beta_vq: {self.fixed_beta_vq}")
+            logger.info("use_selected_beta_pairs: True")
+            logger.info(f"selected_beta_rate: {self.selected_beta_rate}")
+            logger.info(f"selected_beta_vq: {self.selected_beta_vq}")
 
     def codec_setup(self):
         self.entropy_model_z.update(force=True)
@@ -98,17 +88,14 @@ class HyperpriorDualCondVicModel(HyperpriorVicModel):
         self.model_stride = size // zH
         self.y_stride = size // yH
 
-
     def _sample_beta(
         self, max_beta: float, num_levels: int = 100, num_samples: int = 1
     ) -> Tensor:
-        i = np.random.randint(0, num_levels + 1, num_samples).astype(
-            np.float32
-        )
+        i = np.random.randint(0, num_levels + 1, num_samples).astype(np.float32)
         beta = max_beta * (i / float(num_levels))
         beta = torch.Tensor(beta)
         return beta
-    
+
     def _sample_selected_beta_pair(self, num_samples: int) -> Tuple[Tensor, Tensor]:
         assert isinstance(self.selected_beta_rate, list)
         assert isinstance(self.selected_beta_vq, list)
@@ -139,13 +126,11 @@ class HyperpriorDualCondVicModel(HyperpriorVicModel):
         is_train: bool = True,
         fix_entropy_models: bool = False,
         fusion_w: Optional[float] = None,
-        run_vq_decoder: bool = True,
         sample_batch_beta: bool = False,
     ) -> dict:
         real_images = self.img_preprocess(real_images, is_train=is_train)
         if vq_indices is not None:
             vq_indices = vq_indices.to(self.device)
-
 
         if self.use_selected_beta_pairs:
             if beta_rate is None or beta_vq is None:
@@ -155,34 +140,25 @@ class HyperpriorDualCondVicModel(HyperpriorVicModel):
                     )
                 num_samples = real_images.size(0) if sample_batch_beta else 1
                 beta_rate, beta_vq = self._sample_selected_beta_pair(num_samples)
-
         else:
-            if beta_rate is None:
+            if beta_rate is None or beta_vq is None:
                 if not is_train:
                     raise ValueError(
-                        '"beta_rate" must be specified if is_train=False'
+                        '"beta_rate" and "beta_vq" must be specified if is_train=False'
                     )
-                num_samples = real_images.size(0) if sample_batch_beta else 1
+            num_samples = real_images.size(0) if sample_batch_beta else 1
+            if beta_rate is None:
                 beta_rate = self._sample_beta(
                     self.max_beta_rate,
                     num_levels=self.num_beta_levels,
                     num_samples=num_samples,
                 )
-
             if beta_vq is None:
-                if not is_train:
-                    raise ValueError(
-                        '"beta_vq" must be specified if is_train=False'
-                    )
-                num_samples = real_images.size(0) if sample_batch_beta else 1
-                if self.fixed_beta_vq is not None:
-                    beta_vq = self.fixed_beta_vq.expand(num_samples)
-                else:
-                    beta_vq = self._sample_beta(
-                        self.max_beta_vq,
-                        num_levels=self.num_beta_levels,
-                        num_samples=num_samples,
-                    )
+                beta_vq = self._sample_beta(
+                    self.max_beta_vq,
+                    num_levels=self.num_beta_levels,
+                    num_samples=num_samples,
+                )
 
         return dict(
             real_images=real_images,
@@ -191,36 +167,43 @@ class HyperpriorDualCondVicModel(HyperpriorVicModel):
             vq_indices=vq_indices,
             fix_entropy_models=fix_entropy_models,
             fusion_w=fusion_w,
-            run_vq_decoder=run_vq_decoder,
         )
 
     def data_postprocess(
         self, img_shape: Tuple, input_data: Dict, out_dict: Dict, is_train: bool = True
     ) -> Dict:
-        real_images = input_data["real_images"]
-        beta_rate = input_data["beta_rate"]
-        beta_vq = input_data["beta_vq"]
-
-        N = real_images.size(0)
-        H, W = img_shape
-        num_pixel = N * H * W
-
-        fake_images = out_dict.pop("fake_images")
-        real_images, fake_images = self.img_postprocess(
-            real_images, fake_images, size=(H, W), is_train=is_train
+        out_dict = super().data_postprocess(
+            img_shape=img_shape, input_data=input_data, out_dict=out_dict, is_train=is_train
         )
-        rate_summary_dict = self.get_rate_summary_dict(out_dict, num_pixel)
-
         return dict(
-            real_images=real_images,
-            fake_images=fake_images,
-            beta_rate=beta_rate,
-            beta_vq=beta_vq,
-            y_hat=out_dict['quantized_code']['y'],
-            z_hat=out_dict['quantized_code']['z'],
             **out_dict,
-            **rate_summary_dict,
+            beta_rate=input_data["beta_rate"],
+            beta_vq=input_data["beta_vq"],
         )
+        # real_images = input_data["real_images"]
+        # beta_rate = input_data["beta_rate"]
+        # beta_vq = input_data["beta_vq"]
+
+        # N = real_images.size(0)
+        # H, W = img_shape
+        # num_pixel = N * H * W
+
+        # fake_images = out_dict.pop("fake_images")
+        # real_images, fake_images = self.img_postprocess(
+        #     real_images, fake_images, size=(H, W), is_train=is_train
+        # )
+        # rate_summary_dict = self.get_rate_summary_dict(out_dict, num_pixel)
+
+        # return dict(
+        #     real_images=real_images,
+        #     fake_images=fake_images,
+        #     beta_rate=beta_rate,
+        #     beta_vq=beta_vq,
+        #     y_hat=out_dict["quantized_code"]["y"],
+        #     z_hat=out_dict["quantized_code"]["z"],
+        #     **out_dict,
+        #     **rate_summary_dict,
+        # )
 
     def forward(
         self,
@@ -234,9 +217,7 @@ class HyperpriorDualCondVicModel(HyperpriorVicModel):
     ):
         ## VQ Encode
         with torch.no_grad():
-            gt_vq_latent, gt_vq_indices = self.vq_encode(
-                real_images, vq_indices
-            )
+            gt_vq_latent, gt_vq_indices = self.vq_encode(real_images, vq_indices)
 
         # run with grad_enabled=False when fix_entropy_models=True
         grad_enabled = not (fix_entropy_models) if is_train else False
@@ -250,18 +231,16 @@ class HyperpriorDualCondVicModel(HyperpriorVicModel):
             entropy_dict = self.estimate_entropy(y, is_train=is_train)
             y_hat = entropy_dict["quantized_code"]["y"]
 
-        w = fusion_w if fusion_w is not None else 1.0
+        w = 1.0
 
         do_split_decode = max(real_images.shape[2:]) > SPLIT_DECODE_RESOLUTION
         if do_split_decode:
-            assert (
-                not is_train
-            ), "split-decoding is only available in inference"
-            fake_images = self.decode_split(y_hat, w, beta_rate=beta_rate, beta_vq=beta_vq)
-            out_vq_latent, out_vq_logits = (
-                None,
-                None,
-            )  # For simplicity, vq_latent, logits, indices, and accuracy are not stored
+            assert not is_train, "split-decoding is only available in inference"
+            fake_images = self.decode_split(
+                y_hat, w, beta_rate=beta_rate, beta_vq=beta_vq
+            )
+            out_vq_latent, out_vq_logits = None, None
+            # For simplicity, vq_latent, logits, indices, and accuracy are not stored
             out_vq_indices = torch.zeros_like(gt_vq_indices)
             vq_accuracy = torch.zeros(1).to(fake_images.device)
         else:
@@ -293,13 +272,12 @@ class HyperpriorDualCondVicModel(HyperpriorVicModel):
             "vq_accuracy": vq_accuracy,
             **entropy_dict,
         }
-    
+
     def _decode(self, y_hat, w, beta_rate, beta_vq):
-        """used in decode_split
-        """
+        """used in decode_split"""
         transformer_feat, cond_feat_dict = self.decoder.get_feats(
-                y_hat, beta_1=beta_rate, beta_2=beta_vq
-            )
+            y_hat, beta_1=beta_rate, beta_2=beta_vq
+        )
         out_vq_latent, out_vq_logits = self.vq_estimator(transformer_feat)
         out_vq_indices = torch.argmax(out_vq_logits, dim=1)  # [N, H, W]
         vq_latent = self.vq_indices_to_latent(out_vq_indices)
@@ -316,9 +294,7 @@ class HyperpriorDualCondVicModel(HyperpriorVicModel):
         """
         ## VQ Encode
         with torch.no_grad():
-            gt_vq_latent, gt_vq_indices = self.vq_encode(
-                real_images, vq_indices
-            )
+            gt_vq_latent, gt_vq_indices = self.vq_encode(real_images, vq_indices)
             y = self.comp_encode(
                 real_images=real_images,
                 gt_vq_latent=gt_vq_latent,
@@ -343,14 +319,13 @@ class HyperpriorDualCondVicModel(HyperpriorVicModel):
         y_str = self.entropy_model_y.compress(y, indexes, means=means_hat)
         y_hat, y_likelihood = self.entropy_model_y(y, hyper_out, is_train=False)
         return {
-            'y_hat': y_hat,
-            'y_likelihood': y_likelihood,
-            'y_str': y_str,
-            'z_hat': z_hat,
-            'z_likelihood': z_likelihood,
-            'z_str': z_str,
+            "y_hat": y_hat,
+            "y_likelihood": y_likelihood,
+            "y_str": y_str,
+            "z_hat": z_hat,
+            "z_likelihood": z_likelihood,
+            "z_str": z_str,
         }
-
 
     @torch.no_grad()
     def compress(
@@ -376,11 +351,11 @@ class HyperpriorDualCondVicModel(HyperpriorVicModel):
         )
 
         entropy_model_out = self._compress_estimate_entropy(y)
-        y_hat = entropy_model_out['y_hat']
-        y_likelihood = entropy_model_out['y_likelihood']
-        z_likelihood = entropy_model_out['z_likelihood']
-        y_str = entropy_model_out['y_str']
-        z_str = entropy_model_out['z_str']
+        y_hat = entropy_model_out["y_hat"]
+        y_likelihood = entropy_model_out["y_likelihood"]
+        z_likelihood = entropy_model_out["z_likelihood"]
+        y_str = entropy_model_out["y_str"]
+        z_str = entropy_model_out["z_str"]
 
         header_handler = HeaderHandler()
         header_str = header_handler.encode((H, W), y_hat, quality_ind)
@@ -390,7 +365,7 @@ class HyperpriorDualCondVicModel(HyperpriorVicModel):
 
         return {
             "string_list": [header_str, z_str[0], y_str[0]],
-            "z_hat": entropy_model_out['z_hat'],
+            "z_hat": entropy_model_out["z_hat"],
             "y_hat": y_hat,
             "z_likelihood": z_likelihood,
             "y_likelihood": y_likelihood,
@@ -399,7 +374,7 @@ class HyperpriorDualCondVicModel(HyperpriorVicModel):
             "pred_z_bit": pred_z_bitcost.item(),
             "pred_z_bpp": pred_z_bpp.item(),
         }
-    
+
     def _decompress_estimate_entropy(self, z_str, y_str, zH: int, zW: int):
         z_symbol = self.entropy_model_z.decompress([z_str], (zH, zW))
         z_hat = self.entropy_model_z.dequantize(z_symbol)
@@ -435,7 +410,9 @@ class HyperpriorDualCondVicModel(HyperpriorVicModel):
         beta_vq = torch.Tensor([beta_vq]).to(self.device)
         beta_rate = torch.Tensor([beta_rate]).to(self.device)
 
-        y_hat, z_hat = self._decompress_estimate_entropy(latent_z_str, latent_y_str, zH, zW)
+        y_hat, z_hat = self._decompress_estimate_entropy(
+            latent_z_str, latent_y_str, zH, zW
+        )
 
         w = 1.0
         from .hyperprior_vic_model import SPLIT_DECODE_RESOLUTION
@@ -462,7 +439,6 @@ class HyperpriorDualCondVicModel(HyperpriorVicModel):
         fake_images = self.img_postprocess(fake_images, size=(H, W), is_train=False)
         return fake_images, z_hat, y_hat
 
-
     def validation(
         self,
         dataloader,
@@ -470,25 +446,13 @@ class HyperpriorDualCondVicModel(HyperpriorVicModel):
         fusion_w: Optional[float] = None,
         beta_rate: Optional[float] = None,
         beta_vq: Optional[float] = None,
-        save_img: bool = False,
-        save_dir: str = "",
-        use_tqdm: bool = False,
     ) -> pd.DataFrame:
         score_list = []
 
         sample_size = min(len(dataloader), max_sample_size)
 
-        pbar = tqdm(total=sample_size, ncols=60) if use_tqdm else None
-
-        beta_rate = (
-            beta_rate if beta_rate is not None else self.max_beta_rate / 2.0
-        )
+        beta_rate = beta_rate if beta_rate is not None else self.max_beta_rate / 2.0
         beta_vq = beta_vq if beta_vq is not None else self.max_beta_vq / 2.0
-
-        if save_img:
-            assert os.path.exists(
-                save_dir
-            ), f'save_dir: "{save_dir}" does not exist.'
 
         for idx, data in enumerate(dataloader):
             with torch.no_grad():
@@ -499,36 +463,21 @@ class HyperpriorDualCondVicModel(HyperpriorVicModel):
                     is_train=False,
                     fusion_w=fusion_w,
                 )
-                gt_vq_latent = out_dict["gt_vq_latent"]
-                out_vq_latent = out_dict["out_vq_latent"]
 
-            if save_img:
-                fake_path = os.path.join(save_dir, f"sample_{idx+1}_fake.jpg")
-                imwrite(fake_path, out_dict["fake_images"])
-                real_path = os.path.join(save_dir, f"sample_{idx+1}_real.jpg")
-                imwrite(real_path, out_dict["real_images"])
-
-            score_list.append(
-                {
-                    "idx": idx + 1,
-                    "bpp": out_dict["bpp"].item(),
-                    "psnr": calc_psnr(
-                        out_dict["real_images"], out_dict["fake_images"], 255
-                    ),
-                    "ms_ssim": calc_ms_ssim(
-                        out_dict["real_images"], out_dict["fake_images"]
-                    ),
-                    "vq_acc": out_dict["vq_accuracy"].item(),
-                    "vq_mse": F.mse_loss(out_vq_latent, gt_vq_latent).item(),
-                }
-            )
-
-            if pbar:
-                pbar.update(1)
+            score_list.append({
+                "idx": idx + 1,
+                "bpp": out_dict["bpp"].item(),
+                "psnr": calc_psnr(
+                    out_dict["real_images"], out_dict["fake_images"], 255
+                ),
+                "ms_ssim": calc_ms_ssim(
+                    out_dict["real_images"], out_dict["fake_images"]
+                ),
+                "vq_acc": out_dict["vq_accuracy"].item(),
+                "vq_mse": F.mse_loss(out_dict["out_vq_latent"], out_dict["gt_vq_latent"]).item(),
+            })
 
             if idx + 1 == sample_size:
                 break
-        if pbar:
-            pbar.close()
 
         return pd.json_normalize(score_list)

@@ -150,3 +150,6 @@ checkpoint/
 reconstructions/
 pretrained_model/
 *.pth.tar
+datasets/
+beta_selection/
+bin_search/

@@ -9,24 +9,25 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
+from compressai.models import get_scale_table
 from einops import rearrange
 from torch import Tensor, nn
 from tqdm import tqdm
 
-from src.models.comp_model.hyperprior_model import HyperpriorModel
+from src.models.comp_model.base_model import BaseModel
+from src.models.subnet import build_subnet
 from src.models.subnet.vq_estimator import build_vq_estimator
 from src.models.subnet.vq_fusion_module import build_vq_fusion_module
 from src.models.vq_vae_builder import build_pretrained_vq_model
 from src.utils.img_utils import calc_ms_ssim, calc_psnr, imwrite
 from src.utils.registry import MODEL_REGISTRY
 
-
 SPLIT_DECODE_RESOLUTION = 1024
 SPLIT_WINDOW_SIZE = 512
 SPLIT_STRIDE = 256
 
 @MODEL_REGISTRY.register()
-class HyperpriorVicModel(HyperpriorModel):
+class HyperpriorVicModel(BaseModel):
     def __init__(
         self,
         opt,
@@ -38,12 +39,21 @@ class HyperpriorVicModel(HyperpriorModel):
         super().__init__(opt)
         self.gumbel_sampling = gumbel_sampling
         self.gumbel_kwargs = gumbel_kwargs
+
+        assert enc_vq_input in ["norm_indices", "onehot_indices", "long_indices"]
         self.enc_vq_input = enc_vq_input
         self.enc_input_vq_recon = enc_input_vq_recon
+
         self.n_embed = self.vq_model.n_embed
 
     def _build_subnets(self) -> None:
-        super()._build_subnets()
+        self.encoder = build_subnet(self.opt.subnet.encoder, subnet_type='encoder')
+        self.decoder = build_subnet(self.opt.subnet.decoder, subnet_type='decoder')
+        self.hyperencoder = build_subnet(self.opt.subnet.hyperencoder, subnet_type='hyperencoder')
+        self.hyperdecoder = build_subnet(self.opt.subnet.hyperdecoder, subnet_type='hyperdecoder')
+        self.entropy_model_z = build_subnet(self.opt.subnet.entropy_model_z, subnet_type='entropy_model')
+        self.entropy_model_y = build_subnet(self.opt.subnet.entropy_model_y, subnet_type='entropy_model')
+
         self.vq_estimator = build_vq_estimator(self.opt.subnet.vq_estimator)
         self.vq_model = build_pretrained_vq_model(
             self.opt.subnet.vq_model, device=self.device
@@ -52,6 +62,24 @@ class HyperpriorVicModel(HyperpriorModel):
         self.fusion_module = build_vq_fusion_module(
             self.opt.subnet.fusion_module
         )
+
+    def get_rate_summary_dict(self, out_dict: Dict, num_pixel: int) -> Dict[str, Tensor]:
+        _, y_noisy_bpp = self.likelihood_to_bit(out_dict['likelihoods']['y'], num_pixel)
+        _, z_noisy_bpp = self.likelihood_to_bit(out_dict['likelihoods']['z'], num_pixel)
+        _, y_quantized_bpp = self.likelihood_to_bit(out_dict['q_likelihoods']['y'], num_pixel)
+        _, z_quantized_bpp = self.likelihood_to_bit(out_dict['q_likelihoods']['z'], num_pixel)
+        return dict(
+            y_likelihood=out_dict['likelihoods']['y'],
+            z_likelihood=out_dict['likelihoods']['z'],
+            bpp=y_noisy_bpp + z_noisy_bpp,
+            y_q_likelihood=out_dict['q_likelihoods']['y'],
+            z_q_likelihood=out_dict['q_likelihoods']['z'],
+            qbpp=y_quantized_bpp + z_quantized_bpp,
+        )
+    
+    def likelihood_to_bit(self, likelihood: Tensor, num_pixel: int) -> Tuple[Tensor, Tensor]:
+        bitcost = -(torch.log(likelihood).sum()) / np.log(2)
+        return bitcost, bitcost / num_pixel
 
     def run_model(self, real_images: Tensor, is_train: bool = True, **kwargs) -> Dict:
         img_shape = real_images.shape[2:]
@@ -319,10 +347,7 @@ class HyperpriorVicModel(HyperpriorModel):
             y_hat = entropy_dict["quantized_code"]["y"]
 
         ##### Decode part #################################
-        if is_train:
-            w = 1.0
-        else:
-            w = fusion_w if fusion_w is not None else 1.0
+        w = 1.0
 
         # Dividing-decoding for large image (To avoid memory error. Only during Inference)
         do_split_decode = max(real_images.shape[2:]) > SPLIT_DECODE_RESOLUTION
@@ -462,57 +487,48 @@ class HyperpriorVicModel(HyperpriorModel):
         self,
         dataloader,
         max_sample_size: int,
-        save_img: bool = False,
-        save_dir: str = "",
-        use_tqdm: bool = False,
     ) -> pd.DataFrame:
         score_list = []
 
         sample_size = min(len(dataloader), max_sample_size)
 
-        pbar = tqdm(total=sample_size, ncols=60) if use_tqdm else None
-
-        if save_img:
-            assert os.path.exists(
-                save_dir
-            ), f'save_dir: "{save_dir}" does not exist.'
-
         for idx, data in enumerate(dataloader):
             with torch.no_grad():
                 out_dict = self.run_model(**data, is_train=False)
 
-            if save_img:
-                fake_path = os.path.join(save_dir, f"sample_{idx+1}_fake.jpg")
-                imwrite(fake_path, out_dict["fake_images"])
-                real_path = os.path.join(save_dir, f"sample_{idx+1}_real.jpg")
-                imwrite(real_path, out_dict["real_images"])
-
-            score_list.append(
-                {
-                    "idx": idx + 1,
-                    "bpp": out_dict["bpp"].item(),
-                    "psnr": calc_psnr(
-                        out_dict["real_images"], out_dict["fake_images"], 255
-                    ),
-                    "ms_ssim": calc_ms_ssim(
-                        out_dict["real_images"], out_dict["fake_images"]
-                    ),
-                    "vq_acc": out_dict["vq_accuracy"].item(),
-                }
-            )
-
-            if save_img:
-                fake_path = os.path.join(save_dir, f"sample_{idx+1}_fake.jpg")
-                imwrite(fake_path, out_dict["fake_images"])
-                real_path = os.path.join(save_dir, f"sample_{idx+1}_real.jpg")
-                imwrite(real_path, out_dict["real_images"])
-
-            if pbar:
-                pbar.update(1)
+            score_list.append({
+                "idx": idx + 1,
+                "bpp": out_dict["bpp"].item(),
+                "psnr": calc_psnr(
+                    out_dict["real_images"], out_dict["fake_images"], 255
+                ),
+                "ms_ssim": calc_ms_ssim(
+                    out_dict["real_images"], out_dict["fake_images"]
+                ),
+                "vq_acc": out_dict["vq_accuracy"].item(),
+            })
 
             if idx + 1 == sample_size:
                 break
-        if pbar:
-            pbar.close()
 
         return pd.json_normalize(score_list)
+
+    def codec_setup(self):
+        self.entropy_model_z.update(force=True)
+        scale_table = get_scale_table()
+        self.entropy_model_y.update_scale_table(scale_table, force=True)
+
+        # use cpu in models involving entropy coding
+        self.entropy_model_z.to('cpu')
+        self.entropy_model_y.to('cpu')
+        self.hyperdecoder.to('cpu')
+
+        size = 256
+        tmp = torch.rand((1, 3, size, size), device=self.device)
+        with torch.no_grad():
+            y = self.encoder(tmp)
+            z = self.hyperencoder(y)
+        _, self.yC, yH, _ = y.shape
+        _, self.zC, zH, _ = z.shape
+        self.model_stride = size // zH
+        self.y_stride = size // yH

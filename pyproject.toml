@@ -4,6 +4,9 @@ version = "0.1.0"
 description = ""
 authors = ["shomaiwai <sho.iwai101@gmail.com>"]
 readme = "README.md"
+packages = [
+    { include = "src" },
+]
 
 [tool.poetry.dependencies]
 python = "^3.9"
@@ -26,6 +29,7 @@ timm = "0.9.2"
 einops = "0.3.0"
 torchmetrics = "0.6.0"
 taming-transformers = {git = "https://github.com/CompVis/taming-transformers"}
+wandb = "^0.19.7"
 
 
 [[tool.poetry.source]]
