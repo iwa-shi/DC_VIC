@@ -15,7 +15,7 @@ from src.utils.path import PathHandler
 
 from .optimizer import build_optimizer, build_scheduler
 
-from .dual_cond_rate_disotrion_vq_code_trainer import (
+from .dual_cond_rate_distortion_vq_code_trainer import (
     DualBetaModelOutput,
     DualBetaCondRateDistortionVqCodeTrainer,
 )
